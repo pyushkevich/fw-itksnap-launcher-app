@@ -5,21 +5,19 @@
   <title>Open in ITK-SNAP</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; color: #222; }
-    a.button { display: inline-block; padding: 8px 16px; border-radius: 4px;
-               background: #2a6ebb; color: #fff; text-decoration: none; }
-    #url { font-family: monospace; font-size: 12px; color: #666; word-break: break-all; }
     .error { color: #b00020; }
   </style>
 </head>
 <body>
   <p id="status">Connecting to Flywheel&hellip;</p>
-  <p><a id="open" class="button" hidden>Open in ITK-SNAP</a></p>
-  <p id="url"></p>
 
   <script src="https://cdn.flywheel.io/sdk/extension/flywheel-extension-0.14.9.min.js"></script>
   <script>
     // Container types that ITK-SNAP's fw:// direct URL form understands
     const SUPPORTED = { acquisition: 'acquisitions', analysis: 'analyses' };
+
+    // How long to wait after launching ITK-SNAP before closing the frame
+    const CLOSE_DELAY_MS = 1000;
 
     const status = document.getElementById('status');
 
@@ -65,15 +63,12 @@
 
       const url = `itksnap-fw://${host}/${ctype}/${ref.id}/files/${encodeURIComponent(file.name)}`;
 
-      const link = document.getElementById('open');
-      link.href = url;
-      link.hidden = false;
-      document.getElementById('url').textContent = url;
-      status.textContent = `Opening ${file.name} in ITK-SNAP. If nothing happens, click the button below.`;
+      status.textContent = `Opening ${file.name} in ITK-SNAP…`;
+      window.location.href = url;
 
-      // Browsers may block this without a user gesture inside the iframe,
-      // in which case the button above serves as the fallback.
-      try { window.location.href = url; } catch (e) { /* use the button */ }
+      // Close the frame once the browser has handed the URL to ITK-SNAP.
+      // Errors above leave the frame open so the message stays visible.
+      setTimeout(() => extension.close(), CLOSE_DELAY_MS);
     }).catch(err => fail('Failed to connect to Flywheel: ' + err));
   </script>
 </body>

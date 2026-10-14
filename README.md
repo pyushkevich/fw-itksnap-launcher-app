@@ -10,8 +10,8 @@ When invoked on a file, the app builds a URL of the form
 itksnap-fw://<flywheel-host>/acquisitions|analyses/<container-id>/files/<filename>
 ```
 
-and asks the browser to open it. If the browser blocks the automatic launch, click
-the **Open in ITK-SNAP** button.
+and asks the browser to open it. The app's frame then closes itself; it stays open
+only to show an error message.
 
 ## Requirements
 
