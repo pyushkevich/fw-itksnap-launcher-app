@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Open in ITK-SNAP</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; color: #222; }
+    a.button { display: inline-block; padding: 8px 16px; border-radius: 4px;
+               background: #2a6ebb; color: #fff; text-decoration: none; }
+    #url { font-family: monospace; font-size: 12px; color: #666; word-break: break-all; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <p id="status">Connecting to Flywheel&hellip;</p>
+  <p><a id="open" class="button" hidden>Open in ITK-SNAP</a></p>
+  <p id="url"></p>
+
+  <script src="https://cdn.flywheel.io/sdk/extension/flywheel-extension-0.14.9.min.js"></script>
+  <script>
+    // Container types that ITK-SNAP's fw:// direct URL form understands
+    const SUPPORTED = { acquisition: 'acquisitions', analysis: 'analyses' };
+
+    const status = document.getElementById('status');
+
+    // Origin of the Flywheel frame that connects to us, captured by validateOrigin
+    let hostOrigin = null;
+
+    function fail(msg) {
+      status.textContent = msg;
+      status.className = 'error';
+    }
+
+    // Host name of the Flywheel instance. An explicit 'server' application
+    // option wins; otherwise use the origin of the frame that connected to us.
+    function flywheelHost(extension) {
+      if (extension.params && extension.params.server)
+        return extension.params.server;
+      if (hostOrigin)
+        return new URL(hostOrigin).host;
+      if (location.ancestorOrigins && location.ancestorOrigins.length)
+        return new URL(location.ancestorOrigins[0]).host;
+      if (document.referrer)
+        return new URL(document.referrer).host;
+      return null;
+    }
+
+    Flywheel.initExtension({
+      validateOrigin: origin => { hostOrigin = hostOrigin || origin; return true; }
+    }).then(extension => {
+      const file = extension.file;
+      if (!file)
+        return fail('This application must be invoked on a file.');
+
+      // Prefer the file's own parent reference, fall back to the context container
+      const ref = file.parent_ref ||
+        { type: extension.container.container_type, id: extension.container._id };
+      const ctype = SUPPORTED[ref.type];
+      if (!ctype)
+        return fail(`ITK-SNAP can only open files attached to acquisitions or analyses (this file is attached to a ${ref.type}).`);
+
+      const host = flywheelHost(extension);
+      if (!host)
+        return fail('Could not determine the Flywheel server name.');
+
+      const url = `itksnap-fw://${host}/${ctype}/${ref.id}/files/${encodeURIComponent(file.name)}`;
+
+      const link = document.getElementById('open');
+      link.href = url;
+      link.hidden = false;
+      document.getElementById('url').textContent = url;
+      status.textContent = `Opening ${file.name} in ITK-SNAP. If nothing happens, click the button below.`;
+
+      // Browsers may block this without a user gesture inside the iframe,
+      // in which case the button above serves as the fallback.
+      try { window.location.href = url; } catch (e) { /* use the button */ }
+    }).catch(err => fail('Failed to connect to Flywheel: ' + err));
+  </script>
+</body>
+</html>
