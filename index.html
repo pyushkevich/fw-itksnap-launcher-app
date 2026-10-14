@@ -4,13 +4,15 @@
   <meta charset="utf-8">
   <title>Open in ITK-SNAP</title>
   <style>
+    /* Transparent and empty until connected, so the initial full-size frame shows nothing */
+    html, body { background: transparent; }
     body { font-family: system-ui, sans-serif; margin: 0; padding: 12px 24px; color: #222; }
     p { margin: 0; }
     .error { color: #b00020; }
   </style>
 </head>
 <body>
-  <p id="status">Connecting to Flywheel&hellip;</p>
+  <p id="status"></p>
 
   <script src="https://cdn.flywheel.io/sdk/extension/flywheel-extension-0.14.9.min.js"></script>
   <script>
@@ -18,7 +20,7 @@
     const SUPPORTED = { acquisition: 'acquisitions', analysis: 'analyses' };
 
     // How long to wait after launching ITK-SNAP before closing the frame
-    const CLOSE_DELAY_MS = 1000;
+    const CLOSE_DELAY_MS = 250;
 
     const status = document.getElementById('status');
 
@@ -57,7 +59,6 @@
       validateOrigin: origin => { hostOrigin = hostOrigin || origin; return true; }
     }).then(ext => {
       extension = ext;
-      fitHeight();
 
       const file = extension.file;
       if (!file)
@@ -77,6 +78,7 @@
       const url = `itksnap-fw://${host}/${ctype}/${ref.id}/files/${encodeURIComponent(file.name)}`;
 
       status.textContent = `Opening ${file.name} in ITK-SNAP…`;
+      fitHeight();
       window.location.href = url;
 
       // Close the frame once the browser has handed the URL to ITK-SNAP.
