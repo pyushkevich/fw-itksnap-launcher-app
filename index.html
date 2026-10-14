@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <title>Open in ITK-SNAP</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 24px; color: #222; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 12px 24px; color: #222; }
+    p { margin: 0; }
     .error { color: #b00020; }
   </style>
 </head>
@@ -24,9 +25,18 @@
     // Origin of the Flywheel frame that connects to us, captured by validateOrigin
     let hostOrigin = null;
 
+    let extension = null;
+
+    // Shrink the frame to the height of its content (it is never taller than a line or two)
+    function fitHeight() {
+      if (extension)
+        extension.updateViewport({ height: Math.ceil(document.body.getBoundingClientRect().height) });
+    }
+
     function fail(msg) {
       status.textContent = msg;
       status.className = 'error';
+      fitHeight();
     }
 
     // Host name of the Flywheel instance. An explicit 'server' application
@@ -45,7 +55,10 @@
 
     Flywheel.initExtension({
       validateOrigin: origin => { hostOrigin = hostOrigin || origin; return true; }
-    }).then(extension => {
+    }).then(ext => {
+      extension = ext;
+      fitHeight();
+
       const file = extension.file;
       if (!file)
         return fail('This application must be invoked on a file.');
