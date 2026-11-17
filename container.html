@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Open in ITK-SNAP</title>
+  <style>
+    /* Transparent and empty until connected, so the initial full-size frame shows nothing */
+    html, body { background: transparent; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 12px 24px; color: #222; font-size: 14px; }
+    p { margin: 0; }
+    .error { color: #b00020; }
+    .hint { color: #666; margin-bottom: 8px; }
+
+    #list[hidden] { display: none; }
+    section { margin-bottom: 14px; }
+    h2 {
+      font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+      color: #555; margin: 0 0 4px; padding-bottom: 3px; border-bottom: 1px solid #ddd;
+    }
+    h2 .count { font-weight: 400; color: #888; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li a {
+      display: flex; align-items: baseline; gap: 12px;
+      padding: 5px 8px; border-radius: 4px; color: #1a56a8; text-decoration: none;
+    }
+    li a:hover, li a:focus-visible { background: #eaf1fb; outline: none; }
+    .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .meta { color: #888; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .empty { color: #888; font-style: italic; padding: 5px 8px; }
+  </style>
+</head>
+<body>
+  <p id="status"></p>
+
+  <div id="list" hidden>
+    <p class="hint">Choose a workspace or image to open in ITK-SNAP.</p>
+    <section>
+      <h2>ITK-SNAP workspaces <span class="count" id="ws-count"></span></h2>
+      <ul id="workspaces"></ul>
+    </section>
+    <section>
+      <h2>Images <span class="count" id="img-count"></span></h2>
+      <ul id="images"></ul>
+    </section>
+  </div>
+
+  <script src="https://cdn.flywheel.io/sdk/extension/flywheel-extension-0.14.9.min.js"></script>
+  <script>
+    // Container types that ITK-SNAP's fw:// direct URL form understands
+    const SUPPORTED = {
+      acquisition: 'acquisitions', analysis: 'analyses', session: 'sessions',
+      subject: 'subjects', project: 'projects'
+    };
+
+    // Image file extensions ITK-SNAP can open. Companion data files
+    // (.raw, .img, .img.gz) are left out; open their header instead.
+    const IMAGE_EXTS = [
+      '.nii', '.nii.gz', '.nia', '.nia.gz', '.nrrd', '.nhdr', '.mha', '.mhd', '.hdr',
+      '.mnc', '.gipl', '.gipl.gz', '.vtk', '.vti', '.cub', '.cub.gz', '.dcm', '.ge4', '.ge5', '.ima'
+    ];
+    const WORKSPACE_EXT = '.itksnap';
+
+    // How long to wait after launching ITK-SNAP before closing the frame
+    const CLOSE_DELAY_MS = 250;
+
+    const status = document.getElementById('status');
+
+    // Origin of the Flywheel frame that connects to us, captured by validateOrigin
+    let hostOrigin = null;
+
+    let extension = null;
+
+    // Resize the frame to the height of its content
+    function fitHeight() {
+      if (extension)
+        extension.updateViewport({ height: Math.ceil(document.body.getBoundingClientRect().height) });
+    }
+
+    function fail(msg) {
+      document.getElementById('list').hidden = true;
+      status.textContent = msg;
+      status.className = 'error';
+      fitHeight();
+    }
+
+    // Host name of the Flywheel instance. An explicit 'server' application
+    // option wins; otherwise use the origin of the frame that connected to us.
+    function flywheelHost(extension) {
+      if (extension.params && extension.params.server)
+        return extension.params.server;
+      if (hostOrigin)
+        return new URL(hostOrigin).host;
+      if (location.ancestorOrigins && location.ancestorOrigins.length)
+        return new URL(location.ancestorOrigins[0]).host;
+      if (document.referrer)
+        return new URL(document.referrer).host;
+      return null;
+    }
+
+    function hasExt(name, exts) {
+      const lower = name.toLowerCase();
+      return exts.some(ext => lower.endsWith(ext));
+    }
+
+    function formatSize(bytes) {
+      if (bytes == null) return '';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+      return (i === 0 ? bytes : bytes.toFixed(1)) + ' ' + units[i];
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return isNaN(d) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    // Fill one section of the list with links to the given files
+    function renderSection(listId, countId, files, urlFor, emptyText) {
+      const ul = document.getElementById(listId);
+      document.getElementById(countId).textContent = `(${files.length})`;
+      ul.replaceChildren();
+      if (!files.length) {
+        const li = document.createElement('li');
+        li.className = 'empty';
+        li.textContent = emptyText;
+        ul.append(li);
+        return;
+      }
+      for (const file of files) {
+        const a = document.createElement('a');
+        a.href = urlFor(file);
+        a.title = `Open ${file.name} in ITK-SNAP`;
+
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = file.name;
+
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = [formatSize(file.size), formatDate(file.modified)].filter(Boolean).join(' · ');
+
+        a.append(name, meta);
+
+        // The browser follows the itksnap-fw:// link and hands it to ITK-SNAP;
+        // then close the frame.
+        a.addEventListener('click', () => {
+          status.textContent = `Opening ${file.name} in ITK-SNAP…`;
+          status.className = '';
+          fitHeight();
+          setTimeout(() => extension.close(), CLOSE_DELAY_MS);
+        });
+
+        const li = document.createElement('li');
+        li.append(a);
+        ul.append(li);
+      }
+    }
+
+    // The file list of the context container. Fetch the container fresh, so the
+    // list includes files added since the page loaded; fall back to the copy
+    // Flywheel passed in.
+    async function containerFiles(container) {
+      try {
+        const fresh = await extension.getContainer(container.container_type, container._id);
+        if (fresh && Array.isArray(fresh.files))
+          return fresh.files;
+      } catch (err) {
+        console.warn('Could not refresh container, using the copy passed in:', err);
+      }
+      return container.files || [];
+    }
+
+    Flywheel.initExtension({
+      validateOrigin: origin => { hostOrigin = hostOrigin || origin; return true; }
+    }).then(async ext => {
+      extension = ext;
+
+      const container = extension.container;
+      if (!container)
+        return fail('This application must be invoked on a container.');
+
+      const ctype = SUPPORTED[container.container_type];
+      if (!ctype)
+        return fail(`ITK-SNAP cannot open files from a ${container.container_type} container.`);
+
+      const host = flywheelHost(extension);
+      if (!host)
+        return fail('Could not determine the Flywheel server name.');
+
+      const urlFor = file =>
+        `itksnap-fw://${host}/${ctype}/${container._id}/files/${encodeURIComponent(file.name)}`;
+
+      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      const files = (await containerFiles(container)).filter(f => f && f.name).sort(byName);
+      const workspaces = files.filter(f => hasExt(f.name, [WORKSPACE_EXT]));
+      const images = files.filter(f => hasExt(f.name, IMAGE_EXTS));
+
+      if (!workspaces.length && !images.length)
+        return fail(`This ${container.container_type} has no ITK-SNAP workspaces or images that ITK-SNAP can open.`);
+
+      renderSection('workspaces', 'ws-count', workspaces, urlFor, 'No workspaces in this container');
+      renderSection('images', 'img-count', images, urlFor, 'No images in this container');
+      document.getElementById('list').hidden = false;
+      fitHeight();
+    }).catch(err => fail('Failed to connect to Flywheel: ' + err));
+  </script>
+</body>
+</html>
