@@ -10,6 +10,8 @@
     p { margin: 0; }
     .error { color: #b00020; }
     .hint { color: #666; margin-bottom: 8px; }
+    #refreshing { color: #999; font-style: italic; margin-left: 6px; }
+    #refreshing[hidden] { display: none; }
 
     #list[hidden] { display: none; }
     section { margin-bottom: 14px; }
@@ -28,20 +30,33 @@
     .meta { color: #888; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     li.source { color: #555; font-size: 12px; font-weight: 600; padding: 8px 8px 2px; }
     .empty { color: #888; font-style: italic; padding: 5px 8px; }
+    li[hidden], .empty[hidden] { display: none; }
+
+    .filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 6px; }
+    .filters[hidden] { display: none; }
+    .chip {
+      font: inherit; font-size: 12px; cursor: pointer;
+      padding: 2px 10px; border-radius: 12px;
+      border: 1px solid #1a56a8; background: #eaf1fb; color: #1a56a8;
+    }
+    .chip[aria-pressed="false"] { border-color: #ccc; background: transparent; color: #999; text-decoration: line-through; }
+    .chip .n { color: inherit; opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
   <p id="status"></p>
 
   <div id="list" hidden>
-    <p class="hint">Choose a workspace or image to open in ITK-SNAP.</p>
+    <p class="hint">Choose a workspace or image to open in ITK-SNAP. <span id="refreshing" hidden>Checking for changes…</span></p>
     <section>
       <h2>ITK-SNAP workspaces <span class="count" id="ws-count"></span></h2>
       <ul id="workspaces"></ul>
     </section>
     <section>
       <h2>Images <span class="count" id="img-count"></span></h2>
+      <div class="filters" id="ext-filter" role="group" aria-label="Show images by file type" hidden></div>
       <ul id="images"></ul>
+      <p class="empty" id="img-none" hidden>No images of the selected types</p>
     </section>
   </div>
 
@@ -103,6 +118,13 @@
       return exts.some(ext => lower.endsWith(ext));
     }
 
+    // The image extension of a file name, e.g. '.nii.gz' (the longest match)
+    function imageExt(name) {
+      const lower = name.toLowerCase();
+      return IMAGE_EXTS.filter(ext => lower.endsWith(ext))
+        .reduce((best, ext) => ext.length > best.length ? ext : best, '');
+    }
+
     function formatSize(bytes) {
       if (bytes == null) return '';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -147,14 +169,18 @@
       }
 
       const showSources = new Set(items.map(it => it.source)).size > 1;
-      let lastSource = null;
+      let lastSource = null, group = -1;
       for (const { file, source } of items) {
-        if (showSources && source !== lastSource) {
-          const h = document.createElement('li');
-          h.className = 'source';
-          h.textContent = source.heading;
-          ul.append(h);
+        if (source !== lastSource) {
+          group++;
           lastSource = source;
+          if (showSources) {
+            const h = document.createElement('li');
+            h.className = 'source';
+            h.dataset.group = group;
+            h.textContent = source.heading;
+            ul.append(h);
+          }
         }
 
         const a = document.createElement('a');
@@ -181,19 +207,84 @@
         });
 
         const li = document.createElement('li');
+        li.dataset.group = group;
+        li.dataset.ext = imageExt(file.name);
         li.append(a);
         ul.append(li);
       }
     }
 
-    // A container with its file list. Fetch the container fresh, so the list
-    // includes files added since the page loaded (and so child containers from
-    // a listing that omits files get them); fall back to the copy we have.
+    // Image types the viewer has switched off, remembered across runs
+    const HIDDEN_EXTS_KEY = 'itksnap-launcher:prefs:hidden-exts';
+    let hiddenExts = new Set();
+    try { hiddenExts = new Set(JSON.parse(localStorage.getItem(HIDDEN_EXTS_KEY)) || []); } catch (err) {}
+
+    function saveHiddenExts() {
+      try { localStorage.setItem(HIDDEN_EXTS_KEY, JSON.stringify([...hiddenExts])); } catch (err) {}
+    }
+
+    // Build a toggle per image extension in the list. Shown only when there
+    // is more than one extension to choose from.
+    function buildExtFilter(images) {
+      const counts = new Map();
+      for (const { file } of images) {
+        const ext = imageExt(file.name);
+        counts.set(ext, (counts.get(ext) || 0) + 1);
+      }
+      const box = document.getElementById('ext-filter');
+      box.replaceChildren();
+      box.hidden = counts.size < 2;
+      for (const [ext, n] of [...counts].sort((a, b) => b[1] - a[1] || byName(a[0], b[0]))) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip';
+        chip.dataset.ext = ext;
+        chip.setAttribute('aria-pressed', String(!hiddenExts.has(ext)));
+        const count = document.createElement('span');
+        count.className = 'n';
+        count.textContent = n;
+        chip.append(ext, count);
+        chip.addEventListener('click', () => {
+          if (hiddenExts.has(ext)) hiddenExts.delete(ext); else hiddenExts.add(ext);
+          chip.setAttribute('aria-pressed', String(!hiddenExts.has(ext)));
+          saveHiddenExts();
+          applyExtFilter();
+        });
+        box.append(chip);
+      }
+      applyExtFilter();
+    }
+
+    // Show only images of the switched-on extensions, and only the container
+    // headings that still have images under them. Nothing is filtered when
+    // the toggles are not shown.
+    function applyExtFilter() {
+      const active = !document.getElementById('ext-filter').hidden;
+      const rows = [...document.querySelectorAll('#images li[data-ext]')];
+      const visibleGroups = new Set();
+      let shown = 0;
+      for (const li of rows) {
+        li.hidden = active && hiddenExts.has(li.dataset.ext);
+        if (!li.hidden) { shown++; visibleGroups.add(li.dataset.group); }
+      }
+      for (const h of document.querySelectorAll('#images li.source'))
+        h.hidden = !visibleGroups.has(h.dataset.group);
+      document.getElementById('img-count').textContent =
+        shown === rows.length ? `(${rows.length})` : `(${shown} of ${rows.length})`;
+      document.getElementById('img-none').hidden = !rows.length || shown > 0;
+      fitHeight();
+    }
+
+    // A container with its file list. Containers that already carry their
+    // files (the one Flywheel passed in, or children from a listing that
+    // includes files) are used as they are; others are fetched.
     async function withFiles(type, container) {
+      if (Array.isArray(container.files))
+        return container;
       try {
-        const fresh = await extension.getContainer(type, container._id);
-        if (fresh && Array.isArray(fresh.files))
-          return fresh;
+        const full = await extension.getContainer(type, container._id);
+        if (full && Array.isArray(full.files))
+          return full;
       } catch (err) {
         console.warn(`Could not fetch ${type} ${container._id}:`, err);
       }
@@ -213,6 +304,90 @@
       }
     }
 
+    const isListed = name => hasExt(name, [WORKSPACE_EXT]) || hasExt(name, IMAGE_EXTS);
+
+    // The containers whose files are listed, as plain data that can be cached:
+    // this one first, then its children, by type and then by label. Only the
+    // files the list shows are kept.
+    async function gatherSources(container) {
+      const type = container.container_type;
+      const childLists = await Promise.all((CHILD_TYPES[type] || []).map(async ct =>
+        Promise.all((await children(container, ct))
+          .sort((a, b) => byName(a.label, b.label))
+          .map(c => withFiles(ct, c).then(full => ({ type: ct, container: full }))))));
+      return [{ type, container: await withFiles(type, container) }, ...childLists.flat()]
+        .map(({ type, container: c }) => ({
+          type, id: c._id, label: c.label || '',
+          files: (c.files || [])
+            .filter(f => f && f.name && isListed(f.name))
+            .map(f => ({ name: f.name, size: f.size, modified: f.modified }))
+            .sort((a, b) => byName(a.name, b.name))
+        }));
+    }
+
+    // Browser cache of each container's list, so a repeat run shows it at
+    // once while the fresh list loads. Storage can be unavailable (blocked
+    // third-party storage, private windows), in which case nothing is cached.
+    const CACHE_PREFIX = 'itksnap-launcher:v1:';
+    const CACHE_MAX_ENTRIES = 100;
+
+    function cacheKey(host, container) {
+      return `${CACHE_PREFIX}${host}:${container.container_type}:${container._id}`;
+    }
+
+    function loadCache(key) {
+      try {
+        const entry = JSON.parse(localStorage.getItem(key));
+        return entry && Array.isArray(entry.sources) ? entry.sources : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function saveCache(key, sources) {
+      try {
+        localStorage.setItem(key, JSON.stringify({ time: Date.now(), sources }));
+        // Drop the oldest entries beyond the limit
+        const entries = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(CACHE_PREFIX)) {
+            let time = 0;
+            try { time = JSON.parse(localStorage.getItem(k)).time || 0; } catch (err) {}
+            entries.push({ k, time });
+          }
+        }
+        entries.sort((a, b) => b.time - a.time).slice(CACHE_MAX_ENTRIES)
+          .forEach(e => localStorage.removeItem(e.k));
+      } catch (err) {
+        console.warn('Could not cache the file list:', err);
+      }
+    }
+
+    // Show the list for the given sources. Returns false if there is nothing to show.
+    function render(host, type, sources, refreshing) {
+      const decorated = sources.map((s, i) => ({
+        heading: i === 0 ? `This ${type}` : `${TYPE_LABEL[s.type]}: ${s.label || s.id}`,
+        urlFor: file =>
+          `itksnap-fw://${host}/${SUPPORTED[s.type]}/${s.id}/files/${encodeURIComponent(file.name)}`,
+        files: s.files
+      }));
+      const items = decorated.flatMap(source => source.files.map(file => ({ file, source })));
+      const workspaces = items.filter(it => hasExt(it.file.name, [WORKSPACE_EXT]));
+      const images = items.filter(it => hasExt(it.file.name, IMAGE_EXTS));
+      if (!workspaces.length && !images.length)
+        return false;
+
+      status.textContent = '';
+      document.getElementById('refreshing').hidden = !refreshing;
+      renderSection('workspaces', 'ws-count', workspaces, `No workspaces in this ${type}`);
+      renderSection('images', 'img-count', images, `No images in this ${type}`);
+      buildExtFilter(images);
+      document.getElementById('list').hidden = false;
+      fitHeight();
+      return true;
+    }
+
     Flywheel.initExtension({
       validateOrigin: origin => { hostOrigin = hostOrigin || origin; return true; }
     }).then(async ext => {
@@ -230,37 +405,24 @@
       if (!host)
         return fail('Could not determine the Flywheel server name.');
 
-      status.textContent = 'Looking for images and workspaces…';
-      fitHeight();
+      // Show the cached list right away, if there is one, then refresh it
+      const key = cacheKey(host, container);
+      const cached = loadCache(key);
+      const shown = cached && render(host, type, cached, true);
+      if (!shown) {
+        status.textContent = 'Looking for images and workspaces…';
+        fitHeight();
+      }
 
-      // The containers whose files are listed: this one first, then its
-      // children, by type and then by label
-      const childTypes = CHILD_TYPES[type] || [];
-      const childLists = await Promise.all(childTypes.map(async ct =>
-        Promise.all((await children(container, ct))
-          .sort((a, b) => byName(a.label, b.label))
-          .map(c => withFiles(ct, c).then(full => ({ type: ct, container: full }))))));
-      const sources = [{ type, container: await withFiles(type, container) }, ...childLists.flat()]
-        .map(({ type, container: c }, i) => ({
-          order: i,
-          heading: i === 0 ? `This ${type}` : `${TYPE_LABEL[type]}: ${c.label || c._id}`,
-          files: (c.files || []).filter(f => f && f.name).sort((a, b) => byName(a.name, b.name)),
-          urlFor: file =>
-            `itksnap-fw://${host}/${SUPPORTED[type]}/${c._id}/files/${encodeURIComponent(file.name)}`
-        }));
+      const sources = await gatherSources(container);
+      saveCache(key, sources);
 
-      const items = sources.flatMap(source => source.files.map(file => ({ file, source })));
-      const workspaces = items.filter(it => hasExt(it.file.name, [WORKSPACE_EXT]));
-      const images = items.filter(it => hasExt(it.file.name, IMAGE_EXTS));
-
-      status.textContent = '';
-      if (!workspaces.length && !images.length)
-        return fail(`This ${type} has no ITK-SNAP workspaces or images that ITK-SNAP can open.`);
-
-      renderSection('workspaces', 'ws-count', workspaces, `No workspaces in this ${type}`);
-      renderSection('images', 'img-count', images, `No images in this ${type}`);
-      document.getElementById('list').hidden = false;
-      fitHeight();
+      if (shown && JSON.stringify(sources) === JSON.stringify(cached)) {
+        document.getElementById('refreshing').hidden = true;
+        return;
+      }
+      if (!render(host, type, sources, false))
+        fail(`This ${type} has no ITK-SNAP workspaces or images that ITK-SNAP can open.`);
     }).catch(err => fail('Failed to connect to Flywheel: ' + err));
   </script>
 </body>
