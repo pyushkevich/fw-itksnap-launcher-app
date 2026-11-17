@@ -31,7 +31,10 @@ by file extension). Clicking an entry opens
 itksnap-fw://<flywheel-host>/<container-type>/<container-id>/files/<filename>
 ```
 
-and closes the frame. Analysis files listed are the analysis outputs.
+and closes the frame. On a session, the list also includes the files of the
+session's acquisitions and analyses, under a heading for each container. Other
+containers list only their own files. Analysis files listed are the analysis
+outputs.
 Opening a file attached to a session, subject or project needs ITK-SNAP 4.6
 or later with support for those container types in `fw://` URLs.
 

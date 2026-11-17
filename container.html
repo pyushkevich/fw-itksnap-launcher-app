@@ -26,6 +26,7 @@
     li a:hover, li a:focus-visible { background: #eaf1fb; outline: none; }
     .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .meta { color: #888; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    li.source { color: #555; font-size: 12px; font-weight: 600; padding: 8px 8px 2px; }
     .empty { color: #888; font-style: italic; padding: 5px 8px; }
   </style>
 </head>
@@ -116,21 +117,48 @@
       return isNaN(d) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     }
 
-    // Fill one section of the list with links to the given files
-    function renderSection(listId, countId, files, urlFor, emptyText) {
+    // Human-readable name of a container type
+    const TYPE_LABEL = {
+      acquisition: 'Acquisition', analysis: 'Analysis', session: 'Session',
+      subject: 'Subject', project: 'Project'
+    };
+
+    // Child container types whose files are listed along with the container's
+    // own. Only sessions are expanded: subjects and projects can hold far too
+    // many acquisitions to list.
+    const CHILD_TYPES = { session: ['acquisition', 'analysis'] };
+
+    const byName = (a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+
+    // Fill one section of the list with links to the given items ({file, source}).
+    // Items are grouped under a subheading per source container when they come
+    // from more than one container.
+    function renderSection(listId, countId, items, emptyText) {
       const ul = document.getElementById(listId);
-      document.getElementById(countId).textContent = `(${files.length})`;
+      document.getElementById(countId).textContent = `(${items.length})`;
       ul.replaceChildren();
-      if (!files.length) {
+      if (!items.length) {
         const li = document.createElement('li');
         li.className = 'empty';
         li.textContent = emptyText;
         ul.append(li);
         return;
       }
-      for (const file of files) {
+
+      const showSources = new Set(items.map(it => it.source)).size > 1;
+      let lastSource = null;
+      for (const { file, source } of items) {
+        if (showSources && source !== lastSource) {
+          const h = document.createElement('li');
+          h.className = 'source';
+          h.textContent = source.heading;
+          ul.append(h);
+          lastSource = source;
+        }
+
         const a = document.createElement('a');
-        a.href = urlFor(file);
+        a.href = source.urlFor(file);
         a.title = `Open ${file.name} in ITK-SNAP`;
 
         const name = document.createElement('span');
@@ -158,18 +186,31 @@
       }
     }
 
-    // The file list of the context container. Fetch the container fresh, so the
-    // list includes files added since the page loaded; fall back to the copy
-    // Flywheel passed in.
-    async function containerFiles(container) {
+    // A container with its file list. Fetch the container fresh, so the list
+    // includes files added since the page loaded (and so child containers from
+    // a listing that omits files get them); fall back to the copy we have.
+    async function withFiles(type, container) {
       try {
-        const fresh = await extension.getContainer(container.container_type, container._id);
+        const fresh = await extension.getContainer(type, container._id);
         if (fresh && Array.isArray(fresh.files))
-          return fresh.files;
+          return fresh;
       } catch (err) {
-        console.warn('Could not refresh container, using the copy passed in:', err);
+        console.warn(`Could not fetch ${type} ${container._id}:`, err);
       }
-      return container.files || [];
+      return container;
+    }
+
+    // Child containers of the given type. A failure (e.g. the host refusing
+    // the listing) only drops those children from the list.
+    async function children(parent, type) {
+      try {
+        const result = await extension.getChildContainers(parent, type);
+        const list = Array.isArray(result) ? result : (result && result.results) || [];
+        return list.filter(c => c && c._id);
+      } catch (err) {
+        console.warn(`Could not list ${type} containers of ${parent.container_type} ${parent._id}:`, err);
+        return [];
+      }
     }
 
     Flywheel.initExtension({
@@ -181,27 +222,43 @@
       if (!container)
         return fail('This application must be invoked on a container.');
 
-      const ctype = SUPPORTED[container.container_type];
-      if (!ctype)
-        return fail(`ITK-SNAP cannot open files from a ${container.container_type} container.`);
+      const type = container.container_type;
+      if (!SUPPORTED[type])
+        return fail(`ITK-SNAP cannot open files from a ${type} container.`);
 
       const host = flywheelHost(extension);
       if (!host)
         return fail('Could not determine the Flywheel server name.');
 
-      const urlFor = file =>
-        `itksnap-fw://${host}/${ctype}/${container._id}/files/${encodeURIComponent(file.name)}`;
+      status.textContent = 'Looking for images and workspaces…';
+      fitHeight();
 
-      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-      const files = (await containerFiles(container)).filter(f => f && f.name).sort(byName);
-      const workspaces = files.filter(f => hasExt(f.name, [WORKSPACE_EXT]));
-      const images = files.filter(f => hasExt(f.name, IMAGE_EXTS));
+      // The containers whose files are listed: this one first, then its
+      // children, by type and then by label
+      const childTypes = CHILD_TYPES[type] || [];
+      const childLists = await Promise.all(childTypes.map(async ct =>
+        Promise.all((await children(container, ct))
+          .sort((a, b) => byName(a.label, b.label))
+          .map(c => withFiles(ct, c).then(full => ({ type: ct, container: full }))))));
+      const sources = [{ type, container: await withFiles(type, container) }, ...childLists.flat()]
+        .map(({ type, container: c }, i) => ({
+          order: i,
+          heading: i === 0 ? `This ${type}` : `${TYPE_LABEL[type]}: ${c.label || c._id}`,
+          files: (c.files || []).filter(f => f && f.name).sort((a, b) => byName(a.name, b.name)),
+          urlFor: file =>
+            `itksnap-fw://${host}/${SUPPORTED[type]}/${c._id}/files/${encodeURIComponent(file.name)}`
+        }));
 
+      const items = sources.flatMap(source => source.files.map(file => ({ file, source })));
+      const workspaces = items.filter(it => hasExt(it.file.name, [WORKSPACE_EXT]));
+      const images = items.filter(it => hasExt(it.file.name, IMAGE_EXTS));
+
+      status.textContent = '';
       if (!workspaces.length && !images.length)
-        return fail(`This ${container.container_type} has no ITK-SNAP workspaces or images that ITK-SNAP can open.`);
+        return fail(`This ${type} has no ITK-SNAP workspaces or images that ITK-SNAP can open.`);
 
-      renderSection('workspaces', 'ws-count', workspaces, urlFor, 'No workspaces in this container');
-      renderSection('images', 'img-count', images, urlFor, 'No images in this container');
+      renderSection('workspaces', 'ws-count', workspaces, `No workspaces in this ${type}`);
+      renderSection('images', 'img-count', images, `No images in this ${type}`);
       document.getElementById('list').hidden = false;
       fitHeight();
     }).catch(err => fail('Failed to connect to Flywheel: ' + err));
